@@ -712,7 +712,7 @@ enum PlayerSlots
     // first slot for item stored (in any way in player m_items data)
     PLAYER_SLOT_START           = 0,
     // last+1 slot for item stored (in any way in player m_items data)
-    PLAYER_SLOT_END             = 105,
+    PLAYER_SLOT_END             = 108,                  // Classic 1.60: 9 bank bag slots, everything after them +3
     PLAYER_SLOTS_COUNT          = (PLAYER_SLOT_END - PLAYER_SLOT_START)
 };
 
@@ -787,49 +787,49 @@ enum InventoryPackSlots : uint8                             // 28 slots
     INVENTORY_SLOT_ITEM_END     = 63
 };
 
-enum BankBagSlots                                           // 6 slots
+enum BankBagSlots                                           // 9 slots (Classic 1.60: the bank's own tab + 8 bags)
 {
     BANK_SLOT_BAG_START         = 63,
-    BANK_SLOT_BAG_END           = 69
+    BANK_SLOT_BAG_END           = 72
 };
 
 enum BuyBackSlots                                           // 12 slots
 {
     // stored in m_buybackitems
-    BUYBACK_SLOT_START          = 69,
-    BUYBACK_SLOT_END            = 81
+    BUYBACK_SLOT_START          = 72,                   // Classic 1.60: official sniff 70170 sells into slots 72..83
+    BUYBACK_SLOT_END            = 84
 };
 
 enum ChildEquipmentSlots
 {
-    CHILD_EQUIPMENT_SLOT_START   = 81,
-    CHILD_EQUIPMENT_SLOT_END     = 84,
+    CHILD_EQUIPMENT_SLOT_START   = 84,
+    CHILD_EQUIPMENT_SLOT_END     = 87,
 };
 
 enum EquipableSpellSlots
 {
-    EQUIPABLE_SPELL_OFFENSIVE_SLOT1 = 84,
-    EQUIPABLE_SPELL_OFFENSIVE_SLOT2 = 85,
-    EQUIPABLE_SPELL_OFFENSIVE_SLOT3 = 86,
-    EQUIPABLE_SPELL_OFFENSIVE_SLOT4 = 87,
-    EQUIPABLE_SPELL_UTILITY_SLOT1   = 88,
-    EQUIPABLE_SPELL_UTILITY_SLOT2   = 89,
-    EQUIPABLE_SPELL_UTILITY_SLOT3   = 90,
-    EQUIPABLE_SPELL_UTILITY_SLOT4   = 91,
-    EQUIPABLE_SPELL_DEFENSIVE_SLOT1 = 92,
-    EQUIPABLE_SPELL_DEFENSIVE_SLOT2 = 93,
-    EQUIPABLE_SPELL_DEFENSIVE_SLOT3 = 94,
-    EQUIPABLE_SPELL_DEFENSIVE_SLOT4 = 95,
-    EQUIPABLE_SPELL_WEAPON_SLOT1    = 96,
-    EQUIPABLE_SPELL_WEAPON_SLOT2    = 97,
-    EQUIPABLE_SPELL_WEAPON_SLOT3    = 98,
-    EQUIPABLE_SPELL_WEAPON_SLOT4    = 99,
+    EQUIPABLE_SPELL_OFFENSIVE_SLOT1 = 87,
+    EQUIPABLE_SPELL_OFFENSIVE_SLOT2 = 88,
+    EQUIPABLE_SPELL_OFFENSIVE_SLOT3 = 89,
+    EQUIPABLE_SPELL_OFFENSIVE_SLOT4 = 90,
+    EQUIPABLE_SPELL_UTILITY_SLOT1   = 91,
+    EQUIPABLE_SPELL_UTILITY_SLOT2   = 92,
+    EQUIPABLE_SPELL_UTILITY_SLOT3   = 93,
+    EQUIPABLE_SPELL_UTILITY_SLOT4   = 94,
+    EQUIPABLE_SPELL_DEFENSIVE_SLOT1 = 95,
+    EQUIPABLE_SPELL_DEFENSIVE_SLOT2 = 96,
+    EQUIPABLE_SPELL_DEFENSIVE_SLOT3 = 97,
+    EQUIPABLE_SPELL_DEFENSIVE_SLOT4 = 98,
+    EQUIPABLE_SPELL_WEAPON_SLOT1    = 99,
+    EQUIPABLE_SPELL_WEAPON_SLOT2    = 100,
+    EQUIPABLE_SPELL_WEAPON_SLOT3    = 101,
+    EQUIPABLE_SPELL_WEAPON_SLOT4    = 102,
 };
 
 enum AccountBankBagSlots
 {
-    ACCOUNT_BANK_SLOT_BAG_START = 100,
-    ACCOUNT_BANK_SLOT_BAG_END   = 105
+    ACCOUNT_BANK_SLOT_BAG_START = 103,
+    ACCOUNT_BANK_SLOT_BAG_END   = 108
 };
 
 struct ItemPosCount
@@ -2206,8 +2206,13 @@ class TC_GAME_API Player final : public Unit, public GridObject<Player>
         bool UpdateCraftSkill(SpellInfo const* spellInfo);
         bool UpdateGatherSkill(uint32 skillId, uint32 skillValue, uint32 redLevel, uint32 multiplicator = 1, WorldObject const* object = nullptr);
         bool UpdateFishingSkill(int32 expansion);
+        // Classic 1.60: weapon and defense skills grow in melee / ranged combat (vanilla rules)
+        void UpdateCombatSkills(Unit const* victim, WeaponAttackType attType, bool defense);
+        void UpdateWeaponSkill(WeaponAttackType attType);
+        void UpdateDefenseSkill();
 
         float GetHealthBonusFromStamina() const;
+        float GetManaBonusFromIntellect() const;
         Stats GetPrimaryStat() const;
 
         bool UpdateStats(Stats stat) override;
@@ -2240,6 +2245,12 @@ class TC_GAME_API Player final : public Unit, public GridObject<Player>
 
         void RecalculateRating(CombatRating cr) { ApplyRatingMod(cr, 0, true);}
         void GetDodgeFromAgility(float &diminishing, float &nondiminishing) const;
+        float GetMeleeCritFromAgility() const;
+        float GetSpellCritFromIntellect() const;
+        float OCTRegenMPPerSpirit() const;
+        float OCTRegenHPPerSpirit() const;
+        float GetClassicDefenseSkillBonus() const;
+        float GetClassicBaseCritAndDodge() const;
         float GetRatingMultiplier(CombatRating cr) const;
         float GetRatingBonusValue(CombatRating cr) const;
         float ApplyRatingDiminishing(CombatRating cr, float bonusValue) const;
@@ -2247,6 +2258,13 @@ class TC_GAME_API Player final : public Unit, public GridObject<Player>
         /// Returns base spellpower bonus from spellpower stat on items, without spellpower from intellect stat
         uint32 GetBaseSpellPowerBonus() const { return m_baseSpellPower; }
         int32 GetSpellPenetrationItemMod() const { return m_spellPenetrationItemMod; }
+
+        // Classic 1.60 item stats (ITEM_MOD_CLASSIC_*): the best value of the schools / creature types in the mask
+        int32 GetClassicSpellDamageDone(uint32 schoolMask) const;
+        int32 GetClassicSpellPenetration(uint32 schoolMask) const;
+        int32 GetClassicAttackPowerVersus(uint32 creatureTypeMask) const;
+        int32 GetClassicSpellDamageVersus(uint32 creatureTypeMask) const;
+        uint32 GetClassicShieldBlockValue() const override;
 
         bool CanApplyResilience() const override { return true; }
 
@@ -2565,6 +2583,7 @@ class TC_GAME_API Player final : public Unit, public GridObject<Player>
         void ApplyAllAzeriteItemMods(bool apply);
         void ApplyAllAzeriteEmpoweredItemMods(bool apply);
         void _ApplyItemBonuses(Item* item, uint8 slot, bool apply);
+        void _ApplyClassicItemMod(int32 statType, int32 val, bool apply);
         void _ApplyWeaponDamage(uint8 slot, Item* item, bool apply);
         bool EnchantmentFitsRequirements(uint32 enchantmentcondition, int8 slot) const;
         void ToggleMetaGemsActive(uint8 exceptslot, bool apply);
@@ -3287,6 +3306,8 @@ class TC_GAME_API Player final : public Unit, public GridObject<Player>
         uint32 m_baseManaRegen;
         uint32 m_baseHealthRegen;
         int32 m_spellPenetrationItemMod;
+        std::array<int32, 140 - 83> m_classicItemMods = { };   // ItemModType 83 .. 139 (ITEM_MOD_CLASSIC_*), from equipped items
+        int32 m_classicBlockValueBonus = 0;                    // ITEM_MOD_BLOCK_VALUE of equipped items
 
         SpellModContainer m_spellMods;
 

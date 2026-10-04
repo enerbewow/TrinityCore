@@ -1773,10 +1773,8 @@ void Player::RegenerateHealth()
 
         if (!IsInCombat())
         {
-            if (GetLevel() < 15)
-                addValue = (0.20f * ((float)GetMaxHealth()) / GetLevel() * HealthIncreaseRate);
-            else
-                addValue = 0.015f * ((float)GetMaxHealth()) * HealthIncreaseRate;
+            // Classic 1.60 (vanilla): health per tick from spirit (retail: 1.5% of max health)
+            addValue = OCTRegenHPPerSpirit() * HealthIncreaseRate;
 
             addValue *= GetTotalAuraMultiplier(SPELL_AURA_MOD_HEALTH_REGEN_PERCENT);
 
@@ -5131,57 +5129,53 @@ float Player::GetTotalBaseModValue(BaseModGroup modGroup) const
     return m_auraBaseFlatMod[modGroup] * m_auraBasePctMod[modGroup];
 }
 
-void Player::GetDodgeFromAgility(float &/*diminishing*/, float &/*nondiminishing*/) const
+// Classic 1.60 (vanilla, VMaNGOS / TrinityCoreClassic): agility per 1% of crit and dodge, between the class rates of level 1 and 60
+static float ClassicAgilityRate(Player const* player, bool dodge)
 {
-    //// Table for base dodge values
-    //const float dodge_base[MAX_CLASSES] =
-    //{
-    //     0.037580f, // Warrior
-    //     0.036520f, // Paladin
-    //    -0.054500f, // Hunter
-    //    -0.005900f, // Rogue
-    //     0.031830f, // Priest
-    //     0.036640f, // DK
-    //     0.016750f, // Shaman
-    //     0.034575f, // Mage
-    //     0.020350f, // Warlock
-    //     0.0f,      // ??
-    //     0.049510f  // Druid
-    //};
-    //// Crit/agility to dodge/agility coefficient multipliers; 3.2.0 increased required agility by 15%
-    //const float crit_to_dodge[MAX_CLASSES] =
-    //{
-    //     0.85f/1.15f,    // Warrior
-    //     1.00f/1.15f,    // Paladin
-    //     1.11f/1.15f,    // Hunter
-    //     2.00f/1.15f,    // Rogue
-    //     1.00f/1.15f,    // Priest
-    //     0.85f/1.15f,    // DK
-    //     1.60f/1.15f,    // Shaman
-    //     1.00f/1.15f,    // Mage
-    //     0.97f/1.15f,    // Warlock (?)
-    //     0.0f,           // ??
-    //     2.00f/1.15f     // Druid
-    //};
+    float level1, level60;
+    switch (player->GetClass())
+    {
+        case CLASS_ROGUE:   level1 = dodge ? 1.1f : 2.2f;  level60 = dodge ? 14.5f : 29.0f; break;
+        case CLASS_HUNTER:  level1 = dodge ? 1.8f : 3.5f;  level60 = dodge ? 26.5f : 53.0f; break;
+        case CLASS_MAGE:    level1 = 12.9f; level60 = 20.0f; break;
+        case CLASS_PRIEST:  level1 = 11.0f; level60 = 20.0f; break;
+        case CLASS_WARLOCK: level1 = 8.4f;  level60 = 20.0f; break;
+        case CLASS_WARRIOR: level1 = 3.9f;  level60 = 20.0f; break;
+        default:            level1 = 4.6f;  level60 = 20.0f; break;  // paladin, shaman, druid
+    }
+    float level = float(std::min<uint8>(player->GetLevel(), 60));
+    return level1 * (60.0f - level) / 59.0f + level60 * (level - 1.0f) / 59.0f;
+}
 
-    //uint8 level = getLevel();
-    //uint32 pclass = getClass();
+float Player::GetMeleeCritFromAgility() const
+{
+    return std::max(0.0f, GetStat(STAT_AGILITY)) / ClassicAgilityRate(this, false);
+}
 
-    //if (level >= sGtChanceToMeleeCritStore.GetTableRowCount())
-    //    level = sGtChanceToMeleeCritStore.GetTableRowCount() - 1;
+void Player::GetDodgeFromAgility(float& diminishing, float& nondiminishing) const
+{
+    diminishing = 0.0f;
+    nondiminishing = std::max(0.0f, GetStat(STAT_AGILITY)) / ClassicAgilityRate(this, true);
+}
 
-    //// Dodge per agility is proportional to crit per agility, which is available from DBC files
-    //GtChanceToMeleeCritEntry  const* dodgeRatio = sGtChanceToMeleeCritStore.EvaluateTable(level - 1, pclass - 1);
-    //if (dodgeRatio == nullptr || pclass > MAX_CLASSES)
-    //    return;
-
-    ///// @todo research if talents/effects that increase total agility by x% should increase non-diminishing part
-    //float base_agility = GetCreateStat(STAT_AGILITY) * GetPctModifierValue(UnitMods(UNIT_MOD_STAT_START + STAT_AGILITY), BASE_PCT);
-    //float bonus_agility = GetStat(STAT_AGILITY) - base_agility;
-
-    //// calculate diminishing (green in char screen) and non-diminishing (white) contribution
-    //diminishing = 100.0f * bonus_agility * dodgeRatio->ratio * crit_to_dodge[pclass-1];
-    //nondiminishing = 100.0f * (dodge_base[pclass-1] + base_agility * dodgeRatio->ratio * crit_to_dodge[pclass-1]);
+// Classic 1.60 (vanilla): base spell crit and intellect per 1% of spell crit at level 60 per class; lower levels need less
+float Player::GetSpellCritFromIntellect() const
+{
+    float base, rate60;
+    switch (GetClass())
+    {
+        case CLASS_MAGE:    base = 0.2f; rate60 = 59.5f; break;
+        case CLASS_PRIEST:  base = 0.8f; rate60 = 59.2f; break;
+        case CLASS_WARLOCK: base = 1.7f; rate60 = 60.6f; break;
+        case CLASS_DRUID:   base = 1.8f; rate60 = 60.0f; break;
+        case CLASS_SHAMAN:  base = 2.3f; rate60 = 59.5f; break;
+        case CLASS_PALADIN: base = 3.5f; rate60 = 54.0f; break;
+        case CLASS_HUNTER:  base = 3.6f; rate60 = 60.0f; break;
+        default:            return 0.0f;                    // warrior, rogue
+    }
+    float level = float(std::min<uint8>(GetLevel(), 60));
+    float rate = rate60 * (0.2f + 0.8f * (level - 1.0f) / 59.0f);
+    return base + std::max(0.0f, GetStat(STAT_INTELLECT)) / rate;
 }
 
 inline float GetGameTableColumnForCombatRating(GtCombatRatingsEntry const* row, uint32 rating)
@@ -5651,6 +5645,79 @@ bool Player::UpdateFishingSkill(int32 expansion)
     }
 
     return false;
+}
+
+// Classic 1.60: retail has no weapon / defense skill gains; vanilla rules (as in MaNGOS / TrinityCore 3.3.5)
+void Player::UpdateCombatSkills(Unit const* victim, WeaponAttackType attType, bool defense)
+{
+    uint8 playerLevel = GetLevel();
+    uint8 grayLevel = Trinity::XP::GetGrayLevel(playerLevel);
+    uint8 victimLevel = victim->GetLevelForTarget(this);
+    if (victimLevel < grayLevel)
+        return;
+
+    if (victimLevel > playerLevel + 5)
+        victimLevel = playerLevel + 5;
+
+    uint8 levelDiff = std::max<uint8>(victimLevel - grayLevel, 3);
+
+    uint32 skill;
+    if (defense)
+        skill = SKILL_DEFENSE;
+    else
+    {
+        Item const* weapon = GetWeaponForAttack(attType, true);
+        if (weapon)
+            skill = weapon->GetTemplate()->GetSkill();
+        else if (attType == BASE_ATTACK)
+            skill = SKILL_UNARMED;
+        else
+            return;
+    }
+
+    int32 skillDiff = int32(GetMaxSkillValueForLevel()) - int32(GetPureSkillValue(skill));
+    if (skillDiff <= 0)
+        return;
+
+    float chance = float(3 * levelDiff * skillDiff) / playerLevel;
+    if (!defense && (GetClass() == CLASS_WARRIOR || GetClass() == CLASS_ROGUE))
+        chance += chance * 0.02f * GetStat(STAT_INTELLECT);
+
+    if (roll_chance(std::max(chance, 1.0f)))
+    {
+        if (defense)
+            UpdateDefenseSkill();
+        else
+            UpdateWeaponSkill(attType);
+    }
+}
+
+void Player::UpdateWeaponSkill(WeaponAttackType attType)
+{
+    if (IsInFeralForm())
+        return;                                             // no weapon skill gain in cat / bear form
+
+    uint32 skill = SKILL_UNARMED;
+    if (Item const* weapon = GetWeaponForAttack(attType, true))
+    {
+        if (weapon->GetTemplate()->GetSubClass() == ITEM_SUBCLASS_WEAPON_FISHING_POLE)
+            return;
+        skill = weapon->GetTemplate()->GetSkill();
+    }
+    else if (attType != BASE_ATTACK)
+        return;
+
+    UpdateSkillPro(skill, 1000, 1);
+}
+
+void Player::UpdateDefenseSkill()
+{
+    if (UpdateSkillPro(SKILL_DEFENSE, 1000, 1))
+    {
+        UpdateDodgePercentage();
+        UpdateParryPercentage();
+        UpdateBlockPercentage();
+    }
 }
 
 bool Player::UpdateSkillPro(uint16 skillId, int32 chance, uint32 step)
@@ -8309,6 +8376,13 @@ void Player::_ApplyItemBonuses(Item* item, uint8 slot, bool apply)
                 UpdateStatBuffMod(STAT_STRENGTH);
                 UpdateStatBuffMod(STAT_INTELLECT);
                 break;
+            case ITEM_MOD_BLOCK_VALUE:                      // Classic 1.60: added to the shield block value
+                m_classicBlockValueBonus += apply ? int32(val) : -int32(val);
+                break;
+            default:
+                if (statType >= ITEM_MOD_CLASSIC_PHYSICAL_DAMAGE_DONE && statType < ITEM_MOD_CLASSIC_END)
+                    _ApplyClassicItemMod(statType, int32(val), apply);
+                break;
         }
     }
 
@@ -8316,12 +8390,102 @@ void Player::_ApplyItemBonuses(Item* item, uint8 slot, bool apply)
     {
         HandleStatFlatModifier(UNIT_MOD_ARMOR, TOTAL_VALUE, float(armor), apply);
         if (proto->GetClass() == ITEM_CLASS_ARMOR && proto->GetSubClass() == ITEM_SUBCLASS_ARMOR_SHIELD)
-            SetUpdateFieldValue(m_values.ModifyValue(&Player::m_activePlayerData).ModifyValue(&UF::ActivePlayerData::ShieldBlock), apply ? int32(armor * 2.5f) : 0);
+            SetUpdateFieldValue(m_values.ModifyValue(&Player::m_activePlayerData).ModifyValue(&UF::ActivePlayerData::ShieldBlock), apply ? int32(GetClassicShieldBlockValue()) : 0);
     }
 
     WeaponAttackType attType = Player::GetAttackBySlot(slot, proto->GetInventoryType());
     if (attType != MAX_ATTACK)
         _ApplyWeaponDamage(slot, item, apply);
+}
+
+// Classic 1.60: skills of ITEM_MOD_CLASSIC_TWOHANDED_AXES .. ITEM_MOD_CLASSIC_TAILORING
+static constexpr uint32 ClassicItemModSkills[] =
+{
+    SKILL_TWO_HANDED_AXES, SKILL_TWO_HANDED_MACES, SKILL_TWO_HANDED_SWORDS, SKILL_AXES, SKILL_BOWS, SKILL_CROSSBOWS, SKILL_DAGGERS,
+    SKILL_DUAL_WIELD, SKILL_FIST_WEAPONS, SKILL_GUNS, SKILL_MACES, SKILL_POLEARMS, SKILL_STAVES, SKILL_SWORDS, 176 /*Thrown*/, SKILL_WANDS,
+    SKILL_ALCHEMY, SKILL_BLACKSMITHING, SKILL_ENCHANTING, SKILL_ENGINEERING, SKILL_JEWELCRAFTING, SKILL_LEATHERWORKING, SKILL_HERBALISM,
+    SKILL_MINING, SKILL_SKINNING, SKILL_COOKING, 129 /*First Aid*/, SKILL_FISHING, SKILL_TAILORING
+};
+static_assert(std::size(ClassicItemModSkills) == ITEM_MOD_CLASSIC_TAILORING - ITEM_MOD_CLASSIC_TWOHANDED_AXES + 1);
+
+// Classic 1.60: schools of ITEM_MOD_CLASSIC_FIRE_PENETRATION .. ITEM_MOD_CLASSIC_ARCANE_PENETRATION
+static constexpr SpellSchools ClassicItemModPenetrationSchools[] =
+{
+    SPELL_SCHOOL_FIRE, SPELL_SCHOOL_NATURE, SPELL_SCHOOL_FROST, SPELL_SCHOOL_SHADOW, SPELL_SCHOOL_ARCANE
+};
+
+// Classic 1.60: creature types of ITEM_MOD_CLASSIC_ATTACK_POWER_VS_* (and, without mechanical, ITEM_MOD_CLASSIC_SPELL_DAMAGE_VS_*)
+static constexpr CreatureType ClassicItemModCreatureTypes[] =
+{
+    CREATURE_TYPE_HUMANOID, CREATURE_TYPE_ELEMENTAL, CREATURE_TYPE_DEMON, CREATURE_TYPE_UNDEAD, CREATURE_TYPE_DRAGONKIN,
+    CREATURE_TYPE_GIANT, CREATURE_TYPE_BEAST, CREATURE_TYPE_MECHANICAL
+};
+
+void Player::_ApplyClassicItemMod(int32 statType, int32 val, bool apply)
+{
+    m_classicItemMods[statType - ITEM_MOD_CLASSIC_PHYSICAL_DAMAGE_DONE] += apply ? val : -val;
+
+    if (statType == ITEM_MOD_CLASSIC_PHYSICAL_DAMAGE_DONE)
+        UpdateAllDamageDoneMods();
+    else if (statType <= ITEM_MOD_CLASSIC_ARCANE_DAMAGE_DONE)
+        UpdateSpellDamageAndHealingBonus();
+    else if (statType <= ITEM_MOD_CLASSIC_TAILORING)
+        ModifySkillBonus(ClassicItemModSkills[statType - ITEM_MOD_CLASSIC_TWOHANDED_AXES], apply ? val : -val, false);
+    else if (statType == ITEM_MOD_CLASSIC_RESISTANCE_ALL_SCHOOLS)
+        for (UnitMods mod : { UNIT_MOD_RESISTANCE_FIRE, UNIT_MOD_RESISTANCE_NATURE, UNIT_MOD_RESISTANCE_FROST, UNIT_MOD_RESISTANCE_SHADOW, UNIT_MOD_RESISTANCE_ARCANE })
+            HandleStatFlatModifier(mod, BASE_VALUE, float(val), apply);
+    // penetration and the creature type bonuses are read when dealing damage
+}
+
+int32 Player::GetClassicSpellDamageDone(uint32 schoolMask) const
+{
+    int32 best = 0;
+    for (uint32 school = SPELL_SCHOOL_NORMAL; school < MAX_SPELL_SCHOOL; ++school)
+        if (schoolMask & (1 << school))
+            best = std::max(best, m_classicItemMods[school]); // 83 + school
+    return best;
+}
+
+int32 Player::GetClassicSpellPenetration(uint32 schoolMask) const
+{
+    int32 best = 0;
+    for (std::size_t i = 0; i < std::size(ClassicItemModPenetrationSchools); ++i)
+        if (schoolMask & (1 << ClassicItemModPenetrationSchools[i]))
+            best = std::max(best, m_classicItemMods[ITEM_MOD_CLASSIC_FIRE_PENETRATION + i - ITEM_MOD_CLASSIC_PHYSICAL_DAMAGE_DONE]);
+    return best;
+}
+
+int32 Player::GetClassicAttackPowerVersus(uint32 creatureTypeMask) const
+{
+    int32 best = 0;
+    for (std::size_t i = 0; i < std::size(ClassicItemModCreatureTypes); ++i)
+        if (creatureTypeMask & (1 << (ClassicItemModCreatureTypes[i] - 1)))
+            best = std::max(best, m_classicItemMods[ITEM_MOD_CLASSIC_ATTACK_POWER_VS_HUMANOID + i - ITEM_MOD_CLASSIC_PHYSICAL_DAMAGE_DONE]);
+    return best;
+}
+
+// Classic 1.60 (vanilla, VMaNGOS): shield block value (item_classic_block) + block value of the gear + strength / 20 - 1
+uint32 Player::GetClassicShieldBlockValue() const
+{
+    float value = 0.0f;
+    if (Item const* shield = GetUseableItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_OFFHAND))
+        if (shield->GetTemplate()->GetInventoryType() == INVTYPE_SHIELD)
+            value = float(sObjectMgr->GetItemClassicBlock(shield->GetEntry()));
+
+    value += float(m_classicBlockValueBonus);
+    value += float(GetTotalAuraModifier(SPELL_AURA_MOD_BLOCK_VALUE_FLAT));
+    value += GetStat(STAT_STRENGTH) / 20.0f - 1.0f;
+    AddPct(value, float(GetTotalAuraModifier(SPELL_AURA_MOD_SHIELD_BLOCKVALUE_PCT) + GetTotalAuraModifier(SPELL_AURA_MOD_BLOCK_VALUE_PCT)));
+    return uint32(std::max(0.0f, value));
+}
+
+int32 Player::GetClassicSpellDamageVersus(uint32 creatureTypeMask) const
+{
+    int32 best = 0;
+    for (std::size_t i = 0; i < std::size(ClassicItemModCreatureTypes) - 1; ++i) // no mechanical
+        if (creatureTypeMask & (1 << (ClassicItemModCreatureTypes[i] - 1)))
+            best = std::max(best, m_classicItemMods[ITEM_MOD_CLASSIC_SPELL_DAMAGE_VS_HUMANOID + i - ITEM_MOD_CLASSIC_PHYSICAL_DAMAGE_DONE]);
+    return best;
 }
 
 void Player::_ApplyWeaponDamage(uint8 slot, Item* item, bool apply)
@@ -14639,6 +14803,10 @@ int32 Player::GetQuestLevel(Quest const* quest) const
 {
     if (!quest)
         return 0;
+
+    // Classic 1.60: quests have a fixed level (quest_template_classic_level, official beta sniffs); most of them have no ContentTuning
+    if (quest->GetClassicQuestLevel() > 0)
+        return quest->GetClassicQuestLevel();
 
     return GetQuestLevel(quest->GetContentTuningId());
 }
