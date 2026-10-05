@@ -1791,7 +1791,10 @@ void Unit::HandleEmoteCommand(Emote emoteId, Player* target /*=nullptr*/, Trinit
         return damage;
 
     float mitigation = std::min(armor / (armor + armorConstant), 0.85f);
-    return uint32(std::max(damage * (1.0f - mitigation), 0.0f));
+    // Classic 1.60 (vanilla): rounded, and armor never takes a hit below 1 damage (retail truncated: 1 damage hits became 0)
+    if (!damage)
+        return 0;
+    return std::max<uint32>(uint32(damage * (1.0f - mitigation) + 0.5f), 1);
 }
 
 /*static*/ uint32 Unit::CalcSpellResistedDamage(Unit const* attacker, Unit* victim, uint32 damage, SpellSchoolMask schoolMask, SpellInfo const* spellInfo)
@@ -2572,7 +2575,9 @@ uint32 Unit::CalculateDamage(WeaponAttackType attType, bool normalized, bool add
     if (minDamage > maxDamage)
         std::swap(minDamage, maxDamage);
 
-    return urand(uint32(minDamage), uint32(maxDamage));
+    // Classic 1.60: roll inside the real range and round (truncating min and max took up to 1 damage off every hit: a level 1
+    // creature doing 1.2 - 1.6 always hit for 1, then 0 after armor)
+    return uint32(frand(minDamage, maxDamage) + 0.5f);
 }
 
 void Unit::SendMeleeAttackStart(Unit* victim)
@@ -5365,7 +5370,9 @@ void Unit::UpdateStatBuffModForClient(Stats stat)
 void Unit::SetCreateStat(Stats stat, float val)
 {
     UnitMods const unitMod = static_cast<UnitMods>(UNIT_MOD_STAT_START + AsUnderlyingType(stat));
-    HandleStatFlatModifier(unitMod, BASE_VALUE, val, true);
+    // Classic 1.60: set, not add. Player::GiveLevel calls this with the new level's base stats, so adding stacked every level's
+    // stats on top of each other (a level 2 paladin had 47 stamina instead of 24). Gear and auras use TOTAL_VALUE.
+    SetStatFlatModifier(unitMod, BASE_VALUE, val);
 }
 
 float Unit::GetCreateStat(Stats stat) const
@@ -7342,8 +7349,10 @@ float Unit::SpellCritChanceTaken(Unit const* caster, Spell* spell, AuraEffect co
                 // Spell crit suppression
                 if (GetTypeId() == TYPEID_UNIT)
                 {
+                    // Classic 1.60: only higher level targets lower the chance; a level 60 on a level 3 mob gained +57% crit
                     int32 const levelDiff = static_cast<int32>(GetLevelForTarget(caster)) - caster->GetLevel();
-                    crit_chance -= levelDiff * 1.0f;
+                    if (levelDiff > 0)
+                        crit_chance -= levelDiff * 1.0f;
                 }
             }
             break;
@@ -7395,7 +7404,8 @@ float Unit::SpellCritChanceTaken(Unit const* caster, Spell* spell, AuraEffect co
 /*static*/ uint32 Unit::SpellCriticalDamageBonus(Unit const* caster, SpellInfo const* spellProto, uint32 damage, Unit* victim)
 {
     // Calculate critical bonus
-    int32 crit_bonus = damage * 2;
+    // Classic 1.60 (vanilla): spell crits do 150% damage (retail 200%); talents such as Ice Shards or Ruin add to the 50% bonus below
+    int32 crit_bonus = damage + damage / 2;
     float crit_mod = 0.0f;
 
     if (caster)
@@ -8172,7 +8182,7 @@ int32 Unit::MeleeDamageBonusDone(Unit* pVictim, int32 damage, WeaponAttackType a
     if (APbonus != 0)                                       // Can be negative
     {
         bool const normalized = spellProto && spellProto->HasEffect(SPELL_EFFECT_NORMALIZED_WEAPON_DMG);
-        DoneFlatBenefit += int32(APbonus / 3.5f * GetAPMultiplier(attType, normalized));
+        DoneFlatBenefit += int32(APbonus / 14.0f * GetAPMultiplier(attType, normalized));   // Classic 1.60: vanilla 14 attack power per 1 dps (also creatures)
     }
 
     // Done total percent damage auras
@@ -8244,7 +8254,7 @@ int32 Unit::MeleeDamageBonusDone(Unit* pVictim, int32 damage, WeaponAttackType a
             modOwner->ApplySpellMod(spellProto, damagetype == DOT ? SpellModOp::PeriodicHealingAndDamage : SpellModOp::HealingAndDamage, damageF);
 
     // bonus result can be negative
-    return int32(std::max(damageF, 0.0f));
+    return int32(std::max(damageF, 0.0f) + 0.5f);   // Classic 1.60: rounded, not truncated
 }
 
 int32 Unit::MeleeDamageBonusTaken(Unit* attacker, int32 pdamage, WeaponAttackType attType, DamageEffectType damagetype, SpellInfo const* spellProto /*= nullptr*/, SpellSchoolMask damageSchoolMask /*= SPELL_SCHOOL_MASK_NORMAL*/)
@@ -8353,7 +8363,7 @@ int32 Unit::MeleeDamageBonusTaken(Unit* attacker, int32 pdamage, WeaponAttackTyp
     }
 
     float tmpDamage = float(pdamage + TakenFlatBenefit) * TakenTotalMod;
-    return int32(std::max(tmpDamage, 0.0f));
+    return int32(std::max(tmpDamage, 0.0f) + 0.5f);   // Classic 1.60: rounded, not truncated
 }
 
 void Unit::ApplySpellImmune(uint32 spellId, SpellImmunity op, uint32 type, bool apply)
