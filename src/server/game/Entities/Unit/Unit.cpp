@@ -72,6 +72,7 @@
 #include "Player.h"
 #include "PlayerAI.h"
 #include "QuestDef.h"
+#include "RecentAllies.h"
 #include "Spell.h"
 #include "ScheduledChangeAI.h"
 #include "SpellAuraEffects.h"
@@ -1247,15 +1248,16 @@ void Unit::CalculateSpellDamageTaken(SpellNonMeleeDamage* damageInfo, int32 dama
                 // Spell weapon based damage CAN BE crit & blocked at same time
                 if (blocked)
                 {
-                    // double blocked amount if block is critical
-                    uint32 value = victim->GetBlockPercent(GetLevel());
+                    // Classic 1.60 (vanilla): weapon based spells are blocked by the flat shield block value like melee hits (retail: a
+                    // share of the damage; Player::GetBlockPercent gave a fraction that truncated to 0, so players blocked nothing)
+                    float value = float(victim->GetClassicShieldBlockValue());
                     if (victim->IsBlockCritical())
                     {
-                        value *= 2; // double blocked percent
+                        value *= 2; // double blocked amount if block is critical
                         value *= GetTotalAuraMultiplier(SPELL_AURA_MOD_CRITICAL_BLOCK_AMOUNT);
                     }
 
-                    damageInfo->blocked = CalculatePct(damage, value);
+                    damageInfo->blocked = uint32(value);
                     if (damage <= int32(damageInfo->blocked))
                     {
                         damageInfo->blocked = uint32(damage);
@@ -1475,6 +1477,8 @@ void Unit::CalculateMeleeDamage(Unit* victim, CalcDamageInfo* damageInfo, Weapon
                 damageInfo->Blocked *= GetTotalAuraMultiplier(SPELL_AURA_MOD_CRITICAL_BLOCK_AMOUNT);
             }
 
+            // a critical block must not subtract more than the incoming damage (unsigned, it would wrap)
+            damageInfo->Blocked = std::min(damageInfo->Blocked, damageInfo->Damage);
             damageInfo->OriginalDamage = damageInfo->Damage;
             damageInfo->Damage      -= damageInfo->Blocked;
             damageInfo->CleanDamage += damageInfo->Blocked;
@@ -7044,6 +7048,10 @@ float Unit::SpellDamagePctDone(Unit* victim, SpellInfo const* spellProto, Damage
     if (GetTypeId() == TYPEID_UNIT && !IsPet())
         DoneTotalMod *= ToCreature()->GetSpellDamageMod(ToCreature()->GetCreatureTemplate()->Classification);
 
+    // Classic 1.60: a hunter pet's mood (unhappy 75%, content 100%, happy 125%)
+    if (Pet const* pet = ToPet())
+        DoneTotalMod *= pet->GetHappinessDamageMod();
+
     // Versatility
     if (Player* modOwner = GetSpellModOwner())
         AddPct(DoneTotalMod, modOwner->GetRatingBonusValue(CR_VERSATILITY_DAMAGE_DONE) + modOwner->GetTotalAuraModifier(SPELL_AURA_MOD_VERSATILITY));
@@ -8187,6 +8195,10 @@ int32 Unit::MeleeDamageBonusDone(Unit* pVictim, int32 damage, WeaponAttackType a
 
     // Done total percent damage auras
     float DoneTotalMod = 1.0f;
+
+    // Classic 1.60: a hunter pet's mood (unhappy 75%, content 100%, happy 125%)
+    if (Pet const* pet = ToPet())
+        DoneTotalMod *= pet->GetHappinessDamageMod();
 
     SpellSchoolMask schoolMask = spellProto ? spellProto->GetSchoolMask() : damageSchoolMask;
 
@@ -11335,6 +11347,13 @@ bool Unit::InitTamedPet(Pet* pet, uint8 level, uint32 spell_id)
     pet->GetCharmInfo()->SetPetNumber(sObjectMgr->GeneratePetNumber(), true);
     // this enables pet details window (Shift+P)
     pet->InitPetCreateSpells();
+
+    // Classic 1.60: a freshly tamed beast is unhappy until it is fed
+    if (pet->HasHappiness())
+    {
+        pet->SetMaxPower(POWER_HAPPINESS, Pet::HAPPINESS_MAX);
+        pet->SetPower(POWER_HAPPINESS, Pet::HAPPINESS_TAMED);
+    }
     //pet->InitLevelupSpellsForLevel();
     pet->SetFullHealth();
 
@@ -11446,6 +11465,10 @@ void Unit::SetMeleeAnimKitId(uint16 animKitId)
         if (!creature->CanHaveLoot())
             isRewardAllowed = false;
     }
+
+    // Classic 1.60 Social window, Allies tab: players who fought this creature together
+    if (creature)
+        RecentAllies::OnCreatureKill(creature);
 
     // Exploit fix
     if (creature && creature->IsPet() && creature->GetOwnerGUID().IsPlayer())
@@ -12780,7 +12803,10 @@ uint32 Unit::GetModelForForm(ShapeshiftForm form, uint32 spellId) const
                     if (ShapeshiftForm(artifactAppearance->OverrideShapeshiftFormID) == form)
                         return artifactAppearance->OverrideShapeshiftDisplayID;
 
-        if (ShapeshiftFormModelData const* formModelData = sDB2Manager.GetShapeshiftFormModelData(GetRace(), player->GetNativeGender(), form))
+        ShapeshiftFormModelData const* formModelData = sDB2Manager.GetShapeshiftFormModelData(GetRace(), player->GetNativeGender(), form);
+        if (!formModelData && form == FORM_DIRE_BEAR_FORM)  // Classic 1.60: Dire Bear Form has no appearance options of its own, it looks like Bear Form
+            formModelData = sDB2Manager.GetShapeshiftFormModelData(GetRace(), player->GetNativeGender(), FORM_BEAR_FORM);
+        if (formModelData)
         {
             bool useRandom = false;
             switch (form)
@@ -12827,6 +12853,17 @@ uint32 Unit::GetModelForForm(ShapeshiftForm form, uint32 spellId) const
                     if (choiceItr != formModelData->Choices->end())
                         if (ChrCustomizationDisplayInfoEntry const* displayInfo = formModelData->Displays[std::distance(formModelData->Choices->begin(), choiceItr)])
                             return displayInfo->DisplayID;
+                }
+
+                // Classic 1.60: no form appearance chosen - the first one made for this race and class (sniffs of the official beta:
+                // Skyborne druids without a choice are bear 144331, cat 144330, travel form 145284)
+                for (std::size_t i = 0; i < formModelData->Choices->size(); ++i)
+                {
+                    ChrCustomizationReqEntry const* req = sChrCustomizationReqStore.LookupEntry((*formModelData->Choices)[i]->ChrCustomizationReqID);
+                    if (!formModelData->Displays[i] || !req || req->RaceMask.IsEmpty() || req->RaceMask == RACEMASK_ALL_v<int32, 2>)
+                        continue;
+                    if (req->RaceMask.HasRace(GetRace()) && (!req->ClassMask || req->ClassMask & (1 << (GetClass() - 1))))
+                        return formModelData->Displays[i]->DisplayID;
                 }
             }
         }

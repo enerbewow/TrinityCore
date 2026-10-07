@@ -26,6 +26,7 @@
 #include "ObjectAccessor.h"
 #include "Player.h"
 #include "SocialMgr.h"
+#include "RecentAllies.h"
 #include "Spell.h"
 #include "SpellMgr.h"
 #include "TradeData.h"
@@ -47,6 +48,14 @@ void WorldSession::HandleIgnoreTradeOpcode(WorldPackets::Trade::IgnoreTrade& /*i
 
 void WorldSession::HandleBusyTradeOpcode(WorldPackets::Trade::BusyTrade& /*busyTrade*/)
 {
+    // Classic 1.60: the proposer's client answers its own TRADE_STATUS_PROPOSED with this (sniff of the official beta: initiate,
+    // proposed, busy, initiated); the official server ignores it
+    if (TradeData* myTrade = _player->GetTradeData(); myTrade && myTrade->IsAwaitingProposerBusy())
+    {
+        myTrade->SetAwaitingProposerBusy(false);
+        return;
+    }
+
     _player->TradeCancel(true, TRADE_STATUS_PLAYER_IGNORED);
 }
 
@@ -548,6 +557,8 @@ void WorldSession::HandleAcceptTradeOpcode(WorldPackets::Trade::AcceptTrade& acc
         info.Status = TRADE_STATUS_COMPLETE;
         trader->GetSession()->SendTradeStatus(info);
         SendTradeStatus(info);
+
+        RecentAllies::OnTrade(_player, trader);
     }
     else
     {
@@ -711,7 +722,14 @@ void WorldSession::HandleInitiateTradeOpcode(WorldPackets::Trade::InitiateTrade&
 
     info.Status = TRADE_STATUS_PROPOSED;
     info.Partner = _player->GetGUID();
+    info.PartnerAccount = GetBattlenetAccountGUID();
     pOther->GetSession()->SendTradeStatus(info);
+
+    // Classic 1.60: the proposer gets it too, naming the other player (sniff of the official beta)
+    _player->m_trade->SetAwaitingProposerBusy(true);
+    info.Partner = pOther->GetGUID();
+    info.PartnerAccount = pOther->GetSession()->GetBattlenetAccountGUID();
+    SendTradeStatus(info);
 }
 
 void WorldSession::HandleSetTradeGoldOpcode(WorldPackets::Trade::SetTradeGold& setTradeGold)
