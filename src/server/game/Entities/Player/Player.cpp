@@ -16,6 +16,7 @@
  */
 
 #include "Player.h"
+#include "CombatEnchantProc.h"
 #include "DeathRecap.h"
 #include "AreaTrigger.h"
 #include "Account.h"
@@ -45,6 +46,7 @@
 #include "Config.h"
 #include "ChatPackets.h"
 #include "ChatTextBuilder.h"
+#include "ClassicOpcodes.h"
 #include "CinematicMgr.h"
 #include "ClubUtils.h"
 #include "CombatLogPackets.h"
@@ -3622,7 +3624,10 @@ void Player::BuildCreateUpdateBlockForPlayer(UpdateData* data, Player* target) c
             if (item)
                 item->BuildCreateUpdateBlockForPlayer(data, target);
 
-        GetSession()->GetBattlenetAccount().BuildCreateUpdateBlockForPlayer(data, target);
+        // the bnet account object (type 18, retail housing storage) is gone from client 70291: the official server never sends it
+        // and its create misaligned everything after it (the client read past the end of the login update object and crashed)
+        if (!ClassicOpcodes::IsBuild70291OrLater())
+            GetSession()->GetBattlenetAccount().BuildCreateUpdateBlockForPlayer(data, target);
     }
 
     Unit::BuildCreateUpdateBlockForPlayer(data, target);
@@ -4214,6 +4219,10 @@ void Player::DeleteFromDB(ObjectGuid playerguid, uint32 accountId, bool updateRe
             trans->Append(stmt);
 
             stmt = CharacterDatabase.GetPreparedStatement(CHAR_DEL_CHAR_TALENT);
+            stmt->setUInt64(0, guid);
+            trans->Append(stmt);
+
+            stmt = CharacterDatabase.GetPreparedStatement(CHAR_DEL_CHAR_PVP_TALENT);
             stmt->setUInt64(0, guid);
             trans->Append(stmt);
 
@@ -9114,15 +9123,7 @@ void Player::CastItemCombatSpell(DamageInfo const& damageInfo, Item* item, ItemT
             if (FindCurrentSpellBySpellId(5938) && e_slot == TEMP_ENCHANTMENT_SLOT)
                 chance = 100.0f;
 
-            if (roll_chance(chance))
-            {
-                if (spellInfo->IsPositive())
-                    CastSpell(this, spellInfo->Id, item);
-                else
-                    CastSpell(damageInfo.GetVictim(), spellInfo->Id, item);
-            }
-
-            if (roll_chance(chance))
+            CombatEnchantProc::Dispatch(chance, [](float procChance) { return roll_chance(procChance); }, [&]
             {
                 Unit* target = spellInfo->IsPositive() ? this : damageInfo.GetVictim();
 
@@ -9140,7 +9141,7 @@ void Player::CastItemCombatSpell(DamageInfo const& damageInfo, Item* item, ItemT
                             args.AddSpellMod(static_cast<SpellValueModFloat>(SPELLVALUE_BASE_POINT0 + AsUnderlyingType(spellEffectInfo.EffectIndex)), CalculatePct(spellEffectInfo.CalcValue(this), effectPct));
                 }
                 CastSpell(target, spellInfo->Id, args);
-            }
+            });
         }
     }
 }
@@ -12204,6 +12205,20 @@ void Player::QuickEquipItem(uint16 pos, Item* pItem)
     }
 }
 
+void Player::RefreshVisibleItemEnchantment(Item const* item, bool temporary)
+{
+    if (!item || !item->IsEquipped() || item->GetSlot() >= m_playerData->VisibleItems.size())
+        return;
+
+    // An outfit illusion is resolved by SetVisibleItemSlot and must not be
+    // overwritten when an imbue changes or expires.
+    if (temporary && m_playerData->VisibleItems[item->GetSlot()].HasIllusion)
+        return;
+
+    SetUpdateFieldValue(m_values.ModifyValue(&Player::m_playerData).ModifyValue(&UF::PlayerData::VisibleItems, item->GetSlot())
+        .ModifyValue(&UF::VisibleItem::ItemVisual), item->GetVisibleItemVisual(this));
+}
+
 void Player::SetVisibleItemSlot(uint8 slot, Item const* item)
 {
     auto setVisibleItemSlot = [this](uint32 slot, int32 itemId, int32 secondaryItemModifiedAppearanceId, int32 conditionalItemAppearanceId,
@@ -14204,8 +14219,8 @@ void Player::ApplyEnchantment(Item* item, EnchantmentSlot slot, bool apply, bool
     }
 
     // visualize enchantment at player and equipped items
-    if (slot == PERM_ENCHANTMENT_SLOT && item->GetSlot() < m_playerData->VisibleItems.size())
-        SetUpdateFieldValue(m_values.ModifyValue(&Player::m_playerData).ModifyValue(&UF::PlayerData::VisibleItems, item->GetSlot()).ModifyValue(&UF::VisibleItem::ItemVisual), item->GetVisibleItemVisual(this));
+    if (slot == PERM_ENCHANTMENT_SLOT)
+        RefreshVisibleItemEnchantment(item, false);
 
     if (apply_dur)
     {
